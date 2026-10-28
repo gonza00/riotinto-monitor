@@ -11,7 +11,7 @@ import requests
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
 # Pegá acá la URL de la búsqueda (con el filtro de Argentina ya aplicado).
-SEARCH_URL = "https://jobs.riotinto.com/es/job-search-results/"
+SEARCH_URL = "https://jobs.riotinto.com/es/job-search-results/?location=Argentina&country=AR&radius=200&units=km"
 
 # True = te llega "sin novedades" en cada revisión (48 mensajes por día).
 # Útil solo los primeros días para confirmar que el bot está vivo.
