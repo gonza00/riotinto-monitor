@@ -1,4 +1,6 @@
 name: Monitor Rio Tinto
+concurrency:
+  group: monitor
 on:
   schedule:
     - cron: "7,37 * * * *"
