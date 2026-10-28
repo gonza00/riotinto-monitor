@@ -15,7 +15,7 @@ SEARCH_URL = "https://jobs.riotinto.com/es/job-search-results/?location=Argentin
 
 # True = te llega "sin novedades" en cada revisión (48 mensajes por día).
 # Útil solo los primeros días para confirmar que el bot está vivo.
-HEARTBEAT = False
+HEARTBEAT = True
 
 JOB_LINK_SELECTOR = "a[href*='/job/']"
 SEEN_FILE = Path("seen.json")
