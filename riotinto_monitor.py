@@ -10,6 +10,8 @@ from pathlib import Path
 import requests
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
+from urllib.parse import urljoin
+
 # Pegá acá la URL de la búsqueda (con el filtro de Argentina ya aplicado).
 SEARCH_URL = "https://jobs.riotinto.com/es/job-search-results/?location=Argentina&country=AR&radius=200&units=km"
 
@@ -45,8 +47,17 @@ def fetch_jobs() -> dict:
         jobs = {}
         for a in page.query_selector_all(JOB_LINK_SELECTOR):
             href = a.get_attribute("href")
-            if href:
-                jobs[href] = (a.inner_text() or "").strip()
+            if not href:
+                continue
+            title = (a.inner_text() or "").strip()
+            if not title:
+                card = a.evaluate(
+                    "el => { const c = el.closest('li, article, tr, div'); return c ? c.innerText : ''; }"
+                )
+                title = next((l.strip() for l in card.splitlines() if l.strip()), "")
+            if not title:
+                title = href.strip("/").split("/")[-1].replace("-", " ")
+            jobs[urljoin(SEARCH_URL, href)] = title
         browser.close()
         return jobs
 
@@ -63,7 +74,7 @@ def main() -> int:
     new = {u: t for u, t in jobs.items() if u not in seen}
 
     if first_run:
-        lista = "\n".join(f"- {t}\n  {u}" for u, t in jobs.items()) or "(ninguna)"
+        lista = "\n\n".join(f"{t}\n{u}" for u, t in jobs.items()) or "(ninguna)"
         notify(f"Monitor activo. Ofertas actuales en la búsqueda: {len(jobs)}\n{lista}")
     elif new:
         for u, t in new.items():
