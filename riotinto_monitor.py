@@ -39,9 +39,9 @@ def fetch_jobs() -> dict:
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page()
-        page.goto(SEARCH_URL, wait_until="networkidle", timeout=60_000)
+        page.goto(SEARCH_URL, wait_until="domcontentloaded", timeout=60_000)
         try:
-            page.wait_for_selector(JOB_LINK_SELECTOR, timeout=15_000)
+            page.wait_for_selector(JOB_LINK_SELECTOR, timeout=30_000)
         except PWTimeout:
             pass  # sin ofertas todavía: resultado válido
         jobs = {}
@@ -63,10 +63,15 @@ def fetch_jobs() -> dict:
 
 
 def main() -> int:
-    try:
-        jobs = fetch_jobs()
-    except Exception as e:
-        notify(f"Monitor Rio Tinto FALLÓ: {e}")
+    jobs = None
+    for intento in range(3):
+        try:
+            jobs = fetch_jobs()
+            break
+        except Exception as e:
+            error = e
+    if jobs is None:
+        notify(f"Monitor Rio Tinto FALLÓ tras 3 intentos: {error}")
         return 1
 
     first_run = not SEEN_FILE.exists()
