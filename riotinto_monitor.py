@@ -4,6 +4,7 @@ NUEVA en la búsqueda configurada. No se postula: eso lo hacés vos.
 """
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from urllib.parse import urljoin, urlparse, parse_qs, urlencode, urlunparse
@@ -26,6 +27,18 @@ SEEN_FILE = Path("seen.json")
 TG_TOKEN = os.environ.get("TG_TOKEN")
 TG_CHAT_ID = os.environ.get("TG_CHAT_ID")
 
+# Posibles botones de "página siguiente" (se prueban en orden).
+NEXT_SELECTORS = [
+    "a[rel='next']",
+    "[aria-label*='iguiente' i]",
+    "[aria-label*='next' i]",
+    "a:has-text('Siguiente')",
+    "button:has-text('Siguiente')",
+    "a:has-text('Next')",
+    "button:has-text('Next')",
+]
+PAGINATION_ITEMS = "[class*='pagin' i] a, [class*='pagin' i] button, nav a, nav button"
+
 
 def notify(text: str) -> None:
     print(text)
@@ -38,9 +51,7 @@ def notify(text: str) -> None:
 
 
 def page_url(n: int) -> str:
-    """URL de la página n de resultados (la 1 es la URL original)."""
-    if n == 1:
-        return SEARCH_URL
+    """URL de la página n de resultados por carga directa (respaldo)."""
     parts = urlparse(SEARCH_URL)
     q = parse_qs(parts.query)
     q["pg"] = [str(n)]
@@ -66,34 +77,91 @@ def collect(page) -> dict:
     return found
 
 
+def wait_change(page, prev: set, secs: int = 20) -> dict:
+    """Espera a que la lista de ofertas cambie respecto de `prev` y se asiente."""
+    found = collect(page)
+    for _ in range(secs):
+        if found and set(found) != prev:
+            break
+        page.wait_for_timeout(1000)
+        found = collect(page)
+    page.wait_for_timeout(1500)
+    return collect(page)
+
+
+def find_next_control(page, n: int):
+    """Busca el botón o enlace que lleva a la página n."""
+    for a in page.query_selector_all("a[href*='pg=']"):
+        href = a.get_attribute("href") or ""
+        if re.search(rf"[?&]pg={n}(&|#|$)", href) and a.is_visible():
+            return a
+    for sel in NEXT_SELECTORS:
+        for el in page.query_selector_all(sel):
+            if el.is_visible():
+                return el
+    for el in page.query_selector_all(PAGINATION_ITEMS):
+        if el.is_visible() and (el.inner_text() or "").strip() == str(n):
+            return el
+    return None
+
+
+def debug_pagination(page) -> None:
+    """Deja en el registro cómo está armada la paginación (para diagnosticar)."""
+    hrefs = [a.get_attribute("href") for a in page.query_selector_all("a[href*='pg=']")][:5]
+    print("enlaces con pg=:", hrefs)
+    for el in page.query_selector_all("[class*='pagin' i], nav[aria-label]")[:2]:
+        print("paginación HTML:", (el.evaluate("e => e.outerHTML") or "")[:1200])
+
+
+def debug_page(page, n: int) -> None:
+    body = (page.inner_text("body") or "")[:300].replace("\n", " ")
+    print(f"página {n}: sin ofertas. url={page.url} título={page.title()!r} texto={body!r}")
+
+
 def fetch_jobs() -> dict:
     jobs = {}
-    prev = set()
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page()
-        for n in range(1, MAX_PAGES + 1):
-            page.goto(page_url(n), wait_until="domcontentloaded", timeout=60_000)
-            try:
-                page.wait_for_selector(JOB_LINK_SELECTOR, timeout=30_000)
-            except PWTimeout:
-                print(f"página {n}: sin ofertas")
-                break
+        page.goto(SEARCH_URL, wait_until="domcontentloaded", timeout=60_000)
+        try:
+            page.wait_for_selector(JOB_LINK_SELECTOR, timeout=30_000)
+        except PWTimeout:
+            print("página 1: sin ofertas")
+            browser.close()
+            return jobs
+        page.wait_for_timeout(1500)
+        found = collect(page)
+        print(f"página 1: {len(found)} ofertas")
+        debug_pagination(page)
+        jobs.update(found)
+        prev = set(found)
 
-            found = collect(page)
-            if n > 1:
-                # Esperar hasta 20 s a que los resultados cambien respecto de
-                # la página anterior (el portal puede mostrar primero los viejos).
-                for _ in range(20):
-                    if set(found) != prev:
-                        break
-                    page.wait_for_timeout(1000)
-                    found = collect(page)
-            page.wait_for_timeout(1500)  # dejar terminar de dibujarse la lista
-            found = collect(page)
+        for n in range(2, MAX_PAGES + 1):
+            found = {}
+            ctrl = find_next_control(page, n)
+            if ctrl:
+                try:
+                    ctrl.click(timeout=10_000)
+                    found = wait_change(page, prev)
+                except Exception as e:
+                    print(f"página {n}: falló el clic ({e})")
+            else:
+                print(f"página {n}: no encontré botón de paginación")
 
-            print(f"página {n}: {len(found)} ofertas, {len(set(found) - set(jobs))} nuevas")
-            if not (set(found) - set(jobs)):
+            if not found or set(found) == prev:
+                # Respaldo: carga directa de la URL con &pg=n
+                page.goto(page_url(n), wait_until="domcontentloaded", timeout=60_000)
+                try:
+                    page.wait_for_selector(JOB_LINK_SELECTOR, timeout=15_000)
+                except PWTimeout:
+                    debug_page(page, n)
+                    break
+                found = wait_change(page, prev)
+
+            nuevas = set(found) - set(jobs)
+            print(f"página {n}: {len(found)} ofertas, {len(nuevas)} nuevas")
+            if not nuevas:
                 break  # nada nuevo: era la última página o se repitió
             jobs.update(found)
             prev = set(found)
