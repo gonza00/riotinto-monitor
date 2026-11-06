@@ -47,8 +47,28 @@ def page_url(n: int) -> str:
     return urlunparse(parts._replace(query=urlencode(q, doseq=True)))
 
 
+def collect(page) -> dict:
+    """Lee las ofertas visibles en la página actual: {url: titulo}."""
+    found = {}
+    for a in page.query_selector_all(JOB_LINK_SELECTOR):
+        href = a.get_attribute("href")
+        if not href:
+            continue
+        title = (a.inner_text() or "").strip()
+        if not title:
+            card = a.evaluate(
+                "el => { const c = el.closest('li, article, tr, div'); return c ? c.innerText : ''; }"
+            )
+            title = next((l.strip() for l in card.splitlines() if l.strip()), "")
+        if not title:
+            title = href.strip("/").split("/")[-1].replace("-", " ")
+        found[urljoin(SEARCH_URL, href)] = title
+    return found
+
+
 def fetch_jobs() -> dict:
     jobs = {}
+    prev = set()
     with sync_playwright() as p:
         browser = p.chromium.launch()
         page = browser.new_page()
@@ -57,26 +77,26 @@ def fetch_jobs() -> dict:
             try:
                 page.wait_for_selector(JOB_LINK_SELECTOR, timeout=30_000)
             except PWTimeout:
-                break  # esta página no tiene ofertas
+                print(f"página {n}: sin ofertas")
+                break
 
-            found = {}
-            for a in page.query_selector_all(JOB_LINK_SELECTOR):
-                href = a.get_attribute("href")
-                if not href:
-                    continue
-                title = (a.inner_text() or "").strip()
-                if not title:
-                    card = a.evaluate(
-                        "el => { const c = el.closest('li, article, tr, div'); return c ? c.innerText : ''; }"
-                    )
-                    title = next((l.strip() for l in card.splitlines() if l.strip()), "")
-                if not title:
-                    title = href.strip("/").split("/")[-1].replace("-", " ")
-                found[urljoin(SEARCH_URL, href)] = title
+            found = collect(page)
+            if n > 1:
+                # Esperar hasta 20 s a que los resultados cambien respecto de
+                # la página anterior (el portal puede mostrar primero los viejos).
+                for _ in range(20):
+                    if set(found) != prev:
+                        break
+                    page.wait_for_timeout(1000)
+                    found = collect(page)
+            page.wait_for_timeout(1500)  # dejar terminar de dibujarse la lista
+            found = collect(page)
 
+            print(f"página {n}: {len(found)} ofertas, {len(set(found) - set(jobs))} nuevas")
             if not (set(found) - set(jobs)):
                 break  # nada nuevo: era la última página o se repitió
             jobs.update(found)
+            prev = set(found)
         browser.close()
     return jobs
 
@@ -94,8 +114,13 @@ def main() -> int:
         notify(f"Monitor Rio Tinto FALLÓ tras 3 intentos: {error}")
         return 1
 
-    first_run = not SEEN_FILE.exists()
-    seen = set(json.loads(SEEN_FILE.read_text())) if not first_run else set()
+    try:
+        seen = set(json.loads(SEEN_FILE.read_text()))
+        first_run = False
+    except (FileNotFoundError, json.JSONDecodeError):
+        seen = set()
+        first_run = True
+
     new = {u: t for u, t in jobs.items() if u not in seen}
 
     if first_run:
